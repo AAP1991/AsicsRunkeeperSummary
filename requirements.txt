@@ -3,3 +3,5 @@ gpxpy
 geopy
 plotly
 seaborn
+folium
+streamlit_folium
