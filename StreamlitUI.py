@@ -3,6 +3,10 @@ import os
 from zipfile import ZipFile
 import datetime
 
+import folium
+from folium.features import DivIcon
+from streamlit_folium import folium_static
+
 import pandas as pd
 import gpxpy
 import geopy.distance
@@ -12,6 +16,28 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import seaborn as sns
 from itertools import cycle
+
+
+def string_hours_minutes_seconds_to_timedelta(string):
+    return pd.to_timedelta(
+        sum([int(e) * 60 ** index for index, e in enumerate(string.split(":")[::-1])]),
+        unit="seconds"
+    )
+
+
+def timedelta_formatter(td):  # defining the function
+    td_sec = td.seconds  # getting the seconds field of the timedelta
+    hour_count, rem = divmod(td_sec, 3600)  # calculating the total hours
+    minute_count, second_count = divmod(rem, 60)  # distributing the remainders
+    if td.days > 0:
+        msg = "{} days, {}:{}:{}".format(td.days, str(hour_count).zfill(2), str(minute_count).zfill(2),
+                                         str(second_count).zfill(2))
+    elif hour_count > 0:
+        msg = "{}:{}:{}".format(str(hour_count).zfill(2), str(minute_count).zfill(2), str(second_count).zfill(2))
+    else:
+        msg = "{}:{}".format(str(minute_count).zfill(2), str(second_count).zfill(2))
+
+    return msg
 
 
 def get_color_palette(color_blind_palette=None):
@@ -68,12 +94,14 @@ def parse_asics_zip_file(path):
 
     # Feature Engineering
     cardioActivities_df = cardioActivities_df.sort_values("Date").reset_index(drop=True)
+    cardioActivities_df["Duration"] = \
+        cardioActivities_df["Duration"].apply(lambda x: string_hours_minutes_seconds_to_timedelta(x))
     cardioActivities_df["Average Pace"] = \
-        cardioActivities_df["Average Pace"].apply(lambda x: pd.to_timedelta(60 * int(x.split(":")[0]) + int(x.split(":")[1]), unit="seconds").round("s"))
+        cardioActivities_df["Average Pace"].apply(lambda x: string_hours_minutes_seconds_to_timedelta(x))
     cardioActivities_df["Total Distance (km)"] = cardioActivities_df["Distance (km)"].cumsum()
 
     mask = measurements_df.Type == "weight"
-    measurements_df = measurements_df[mask].reset_index(drop=True)
+    measurements_df = measurements_df[mask].sort_values("Date").reset_index(drop=True)
 
     def custom_aggregation(df):
         # print(df)
@@ -106,10 +134,10 @@ def parse_asics_zip_file(path):
         aggregation_dict["DistanceAcc"] = pd.Series(aggregation_dict["Distance"]).cumsum().tolist()
 
         aggregation_dict["AveragePace"] = \
-            [
+            pd.to_timedelta([
                 (t / 60.0) / (m / 1000.0) if m > 0 else 0 for t, m in
                 zip(aggregation_dict["TimeDiff"], aggregation_dict["Distance"])
-            ]
+            ], unit="minutes").round("s")
 
         return pd.DataFrame(aggregation_dict)
 
@@ -123,12 +151,16 @@ def parse_asics_zip_file(path):
         .reset_index(drop=True)
     )
 
+    gpx_df["Average Pace"] = gpx_df["AveragePace"].apply(
+        lambda x: datetime.datetime.combine(datetime.datetime.today().date(), datetime.datetime.min.time()) + x)
+
     def custom_aggregation(df):
         aggregation_dict = {}
 
         km_list = []
         average_pace_list = []
         elevation_list = []
+        lat_lon_list = []
         last_distance = None
         last_time = None
         last_elevation = None
@@ -139,6 +171,7 @@ def parse_asics_zip_file(path):
             distance = aux_df["DistanceAcc"].values[0]
             time = aux_df["TimeAcc"].values[0]
             elevation = aux_df["Elevation"].values[0]
+            lat_lon = aux_df[["Latitude", "Longitude"]].apply(lambda x: (x.Latitude, x.Longitude), axis=1).values[0]
             if last_distance is None:
                 average_pace = (time / 60.0) / (distance / 1000.0)
                 elevation_diff = elevation - df.sort_values(["TimeAcc"])["Elevation"].values[0]
@@ -149,6 +182,7 @@ def parse_asics_zip_file(path):
             km_list.append(km)
             average_pace_list.append(pd.to_timedelta(average_pace, unit="minutes").round("s"))
             elevation_list.append(int(round(elevation_diff)))
+            lat_lon_list.append(lat_lon)
 
             last_distance = distance
             last_time = time
@@ -159,6 +193,7 @@ def parse_asics_zip_file(path):
         aggregation_dict["Km"] = km_list
         aggregation_dict["AveragePace"] = average_pace_list
         aggregation_dict["Elevation"] = elevation_list
+        aggregation_dict["Points"] = lat_lon_list
 
         return pd.DataFrame(aggregation_dict)
 
@@ -171,6 +206,9 @@ def parse_asics_zip_file(path):
         .apply(custom_aggregation)
         .reset_index(drop=True)
     )
+
+    km_df["Average Pace"] = km_df["AveragePace"].apply(
+        lambda x: datetime.datetime.combine(datetime.datetime.today().date(), datetime.datetime.min.time()) + x)
 
     return cardioActivities_df, measurements_df, gpx_df, km_df
 
@@ -194,7 +232,30 @@ def render_dashboard():
     if cardioActivities_df is None or cardioActivities_df.empty:
         return
 
-    st.header("Plots Section")
+    st.header("Main KPIs")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.metric(label="Max distance", value=f"{cardioActivities_df['Distance (km)'].max()} Km")
+        st.metric(label="Accumulated distance", value=f"{cardioActivities_df['Distance (km)'].sum()} Km")
+
+    with col2:
+        st.metric(
+            label="Min average pace",
+            value=f"{timedelta_formatter(cardioActivities_df['Average Pace'].min())} min/Km"
+        )
+        st.metric(label="Accumulated time", value=f"{cardioActivities_df['Duration'].sum()}")
+
+    with col3:
+        st.metric(
+            label="Weight",
+            value=f"{measurements_df['Value'].values[-1]} Kg",
+            delta=f"{measurements_df['Value'].values[-1] - measurements_df['Value'].values[0]} Kg",
+            delta_color="inverse",
+        )
+
+    st.header("General Analysis")
 
     # Create figure with secondary y-axis
     fig = make_subplots(specs=[[{"secondary_y": True}]])
@@ -203,7 +264,9 @@ def render_dashboard():
     fig.add_trace(
         go.Scatter(
             x=cardioActivities_df["Date"],
-            y=cardioActivities_df["Average Pace"].apply(lambda x: datetime.datetime.combine(datetime.datetime.today().date(), datetime.datetime.min.time()) + x),
+            y=cardioActivities_df["Average Pace"].apply(
+                lambda x: datetime.datetime.combine(datetime.datetime.today().date(),
+                                                    datetime.datetime.min.time()) + x),
             marker=dict(
                 size=cardioActivities_df["Climb (m)"] / 10,
                 color=cardioActivities_df["Distance (km)"],
@@ -249,39 +312,198 @@ def render_dashboard():
     fig.update_xaxes(title_text="Date")
 
     # Set y-axes titles
-    fig.update_yaxes(title_text="Average Pace (min/km)", secondary_y=False)
-    fig.update_yaxes(title_text="Weight (kg)", range=[50, 100], secondary_y=True)
+    fig.update_yaxes(title_text="Average Pace (min/Km)", secondary_y=False)
+    fig.update_yaxes(title_text="Weight (Kg)", range=[50, 100], secondary_y=True)
 
     fig.update_layout(
-        yaxis_tickformat = "%M:%S"
+        yaxis_tickformat="%M:%S"
     )
-    
+
     st.plotly_chart(fig, use_container_width=True)
+
+    # fig = px.line(
+    #     cardioActivities_df,
+    #     x="Date",
+    #     y="Total Distance (km)",
+    #     markers=True,
+    # )
+    # st.plotly_chart(fig, use_container_width=True)
 
     fig = px.line(
-        cardioActivities_df,
+        km_df,
         x="Date",
-        y="Total Distance (km)",
+        y="Average Pace",
         markers=True,
+        color="Km",
+        title="Average Pace per Km evolution"
     )
-    st.plotly_chart(fig, use_container_width=True)
-
-    km_df["Average Pace"] = km_df['AveragePace'].apply(lambda x: datetime.datetime.combine(datetime.datetime.today().date(), datetime.datetime.min.time()) + x)
-
-    fig = px.line(km_df, x="Km", y="Average Pace", markers=True, color="Date")
 
     fig.update_layout(
         yaxis_tickformat="%M:%S"
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    fig = px.scatter(
-        gpx_df.sort_values(["Date", "ElevationDiff"]),
-        x="ElevationDiff",
-        y="AveragePace",
-        color="Date",
-    )
-    st.plotly_chart(fig, use_container_width=True)
+    # fig = px.scatter(
+    #     gpx_df.sort_values(["Date", "ElevationDiff"]),
+    #     x="ElevationDiff",
+    #     y="AveragePace",
+    #     color="Date",
+    # )
+    # st.plotly_chart(fig, use_container_width=True)
+    #
+    # fig = px.scatter(
+    #     gpx_df.sort_values(["Date", "ElevationDiff"]),
+    #     x="Date",
+    #     y="AveragePace",
+    #     color="ElevationDiff",
+    # )
+    # st.plotly_chart(fig, use_container_width=True)
+    #
+    # fig = px.violin(
+    #     gpx_df.sort_values(["Date", "ElevationDiff"]),
+    #     x="ElevationDiff",
+    #     y="AveragePace",
+    # )
+    # st.plotly_chart(fig, use_container_width=True)
+
+    st.header("Race Analysis")
+
+    race_date = st.selectbox(label="Date", options=[""] + gpx_df["Date"].unique().tolist())
+
+    if not race_date:
+        return
+
+    # mask = cardioActivities_df["Date"] == race_date
+    # cardioActivities_df = cardioActivities_df[mask].reset_index(drop=True)
+    # mask = measurements_df["Date"] == race_date
+    # measurements_df = measurements_df[mask].reset_index(drop=True)
+    mask = gpx_df["Date"] == race_date
+    gpx_df = gpx_df[mask].reset_index(drop=True)
+    mask = km_df["Date"] == race_date
+    km_df = km_df[mask].reset_index(drop=True)
+
+    # # st.write(cardioActivities_df)
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        # fig = px.line_mapbox(
+        #     gpx_df,
+        #     lat="Latitude",
+        #     lon="Longitude",
+        #     #zoom=3,
+        #     #height=300
+        # )
+        # st.plotly_chart(fig, use_container_width=True)
+        map = folium.Map(
+            location=[
+                km_df["Points"].apply(lambda x: x[0]).mean(),
+                km_df["Points"].apply(lambda x: x[1]).mean()
+            ],
+            zoom_start=14
+        )
+
+        points = gpx_df[["Latitude", "Longitude"]].apply(lambda x: (x.Latitude, x.Longitude), axis=1).tolist()
+        # add a markers
+        folium.Marker(
+            points[0],
+            icon=DivIcon(
+                icon_size=(30, 30),
+                icon_anchor=(15, 15),
+                html=f'''
+                    <div style="
+                        background-color: #007bff;
+                        color: #fff;
+                        border-radius: 50%;
+                        padding: 6px;
+                        text-align: center;
+                        font-weight: bold;
+                        font-size: 14px;
+                        width: 30px;
+                        height: 30px;
+                        line-height: 30px;
+                    ">Start</div>
+                '''
+            )
+        ).add_to(map)
+
+        for index, row in km_df.iterrows():
+            folium.Marker(
+                row["Points"],
+                icon=DivIcon(
+                    icon_size=(30, 30),
+                    icon_anchor=(15, 15),
+                    html=f'''
+                    <div style="
+                        background-color: #007bff;
+                        color: #fff;
+                        border-radius: 50%;
+                        padding: 6px;
+                        text-align: center;
+                        font-weight: bold;
+                        font-size: 14px;
+                        width: 30px;
+                        height: 30px;
+                        line-height: 30px;
+                    ">{row["Km"]}</div>
+                '''
+                )
+            ).add_to(map)
+
+        folium.Marker(
+            points[-1],
+            icon=DivIcon(
+                icon_size=(30, 30),
+                icon_anchor=(15, 15),
+                html=f'''
+                    <div style="
+                        background-color: #007bff;
+                        color: #fff;
+                        border-radius: 50%;
+                        padding: 6px;
+                        text-align: center;
+                        font-weight: bold;
+                        font-size: 14px;
+                        width: 30px;
+                        height: 30px;
+                        line-height: 30px;
+                    ">Finish</div>
+                '''
+            )
+        ).add_to(map)
+
+        # fadd lines
+        folium.PolyLine(points, color="red", weight=2.5, opacity=1).add_to(map)
+        folium_static(map, width=350, height=450)
+
+        fig = px.line(
+            gpx_df,
+            x="DistanceAcc",
+            y="Elevation",
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    with col2:
+        fig = px.line(
+            km_df,
+            x="Km",
+            y="Average Pace",
+            markers=True,
+        )
+        fig.update_layout(
+            yaxis_tickformat="%M:%S"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        fig = px.scatter(
+            gpx_df,
+            x="ElevationDiff",
+            y="Average Pace",
+        )
+        fig.update_layout(
+            yaxis_tickformat="%M:%S"
+        )
+        st.plotly_chart(fig, use_container_width=True)
 
 
 if __name__ == "__main__":
