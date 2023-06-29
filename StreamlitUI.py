@@ -176,7 +176,7 @@ def parse_asics_zip_file(path):
 
 
 def render_dashboard():
-    st.title("Asics Running Summary")
+    st.title("Asics RunKeeper Summary")
 
     color_blind_palette = st.checkbox("Do you want to use a colorblind palette for the charts?")
     if color_blind_palette is None:
