@@ -68,6 +68,8 @@ def parse_asics_zip_file(path):
 
     # Feature Engineering
     cardioActivities_df = cardioActivities_df.sort_values("Date").reset_index(drop=True)
+    cardioActivities_df["Average Pace"] = \
+        cardioActivities_df["Average Pace"].apply(lambda x: pd.to_timedelta(60 * int(x.split(":")[0]) + int(x.split(":")[1]), unit="seconds").round("s"))
     cardioActivities_df["Total Distance (km)"] = cardioActivities_df["Distance (km)"].cumsum()
 
     mask = measurements_df.Type == "weight"
@@ -201,7 +203,7 @@ def render_dashboard():
     fig.add_trace(
         go.Scatter(
             x=cardioActivities_df["Date"],
-            y=cardioActivities_df["Average Pace"],
+            y=cardioActivities_df["Average Pace"].apply(lambda x: datetime.datetime.combine(datetime.datetime.today().date(), datetime.datetime.min.time()) + x),
             marker=dict(
                 size=cardioActivities_df["Climb (m)"] / 10,
                 color=cardioActivities_df["Distance (km)"],
@@ -249,6 +251,11 @@ def render_dashboard():
     # Set y-axes titles
     fig.update_yaxes(title_text="Average Pace (min/km)", secondary_y=False)
     fig.update_yaxes(title_text="Weight (kg)", range=[50, 100], secondary_y=True)
+
+    fig.update_layout(
+        yaxis_tickformat = "%M:%S"
+    )
+    
     st.plotly_chart(fig, use_container_width=True)
 
     fig = px.line(
