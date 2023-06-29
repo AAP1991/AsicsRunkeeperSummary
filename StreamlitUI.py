@@ -275,6 +275,14 @@ def render_dashboard():
     )
     st.plotly_chart(fig, use_container_width=True)
 
+    fig = px.scatter(
+        gpx_df.sort_values(["Date", "ElevationDiff"]),
+        x="ElevationDiff",
+        y="AveragePace",
+        color="Date",
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
 
 if __name__ == "__main__":
     render_dashboard()
