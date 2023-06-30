@@ -40,13 +40,16 @@ def timedelta_formatter(td):  # defining the function
     return msg
 
 
-def get_color_palette(color_blind_palette=None):
+def get_color_palette(color_blind_palette=None, n_colors=None):
     if color_blind_palette is None:
         color_blind_palette = False
+    if n_colors is None:
+        n_colors = 15
+
     if color_blind_palette:
-        color_palette = list(sns.color_palette(palette="colorblind", n_colors=15).as_hex())
+        color_palette = list(sns.color_palette(palette="colorblind", n_colors=n_colors).as_hex())
     else:
-        color_palette = list(sns.color_palette(palette="bright", n_colors=15).as_hex())
+        color_palette = list(sns.color_palette(palette="bright", n_colors=n_colors).as_hex())
     return color_palette
 
 
@@ -214,13 +217,14 @@ def parse_asics_zip_file(path):
 
 
 def render_dashboard():
+    st.set_page_config(
+        layout="wide",
+    )
     st.title("Asics RunKeeper Summary")
 
     color_blind_palette = st.checkbox("Do you want to use a colorblind palette for the charts?")
     if color_blind_palette is None:
         color_blind_palette = False
-
-    _color_palette = get_color_palette(color_blind_palette=color_blind_palette)
 
     uploaded_zip_file = st.file_uploader("Choose a file", type=["zip"])
 
@@ -231,6 +235,11 @@ def render_dashboard():
 
     if cardioActivities_df is None or cardioActivities_df.empty:
         return
+
+    _color_palette = get_color_palette(
+        color_blind_palette=color_blind_palette,
+        n_colors=km_df["Km"].nunique()
+    )
 
     st.header("Main KPIs")
 
@@ -274,7 +283,7 @@ def render_dashboard():
                     title="Distance (km)",
                 ),
                 colorbar_x=-0.3,
-                colorscale="Viridis"
+                colorscale="Ice" if color_blind_palette else "Viridis"
             ),
             mode="markers",
             name="Average Pace",
@@ -335,7 +344,8 @@ def render_dashboard():
         y="Average Pace",
         markers=True,
         color="Km",
-        title="Average Pace per Km evolution"
+        title="Average Pace per Km evolution",
+        color_discrete_sequence=_color_palette
     )
 
     fig.update_layout(
@@ -474,12 +484,13 @@ def render_dashboard():
 
         # fadd lines
         folium.PolyLine(points, color="red", weight=2.5, opacity=1).add_to(map)
-        folium_static(map, width=350, height=450)
+        folium_static(map, width=700, height=450)
 
         fig = px.line(
             gpx_df,
             x="DistanceAcc",
             y="Elevation",
+            title="Elevation during the race",
         )
         st.plotly_chart(fig, use_container_width=True)
 
@@ -489,6 +500,7 @@ def render_dashboard():
             x="Km",
             y="Average Pace",
             markers=True,
+            title="Average Pace (min/Km) per Km",
         )
         fig.update_layout(
             yaxis_tickformat="%M:%S"
@@ -499,6 +511,7 @@ def render_dashboard():
             gpx_df,
             x="ElevationDiff",
             y="Average Pace",
+            title="Average Pace (min/Km) per Elevation Difference (m)",
         )
         fig.update_layout(
             yaxis_tickformat="%M:%S"
